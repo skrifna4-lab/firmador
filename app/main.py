@@ -21,6 +21,29 @@ CERT_DIR = "/app/certs"
 def home():
     return {"status": "Servicio de Firma Operativo", "entorno": "VPS Dokploy"}
 
+@app.post("/cert/generar-auto")
+async def generar_auto(alias: str):
+    """
+    ESTO CREA EL CERTIFICADO EN EL VPS DESDE CERO
+    Genera una llave privada y un certificado de prueba (BETA)
+    """
+    key_path = os.path.join(CERT_DIR, f"{alias}.key")
+    cert_path = os.path.join(CERT_DIR, f"{alias}.pem") # Usaremos este para firmar
+
+    # Comando OpenSSL para crear llave y certificado auto-firmado en un solo paso
+    # Válido por 365 días, de 2048 bits
+    cmd = (
+        f'openssl req -x509 -newkey rsa:2048 -keyout {key_path} '
+        f'-out {cert_path} -days 365 -nodes -subj "/C=PE/ST=Lima/L=Lima/O=Pruebas/CN={alias}"'
+    )
+    
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Error creando cert: {proc.stderr}")
+
+    return {"status": "Certificado Creado en VPS", "alias": alias, "archivo": cert_path}
+    
 @app.post("/convertir-pfx")
 async def convertir_pfx(
     file: UploadFile = File(...), 
@@ -79,4 +102,5 @@ async def firmar_xml(xml_base64: str, alias: str):
             "status": "success"
         }
     except Exception as e:
+
         raise HTTPException(status_code=500, detail=f"Error en firma: {str(e)}")
