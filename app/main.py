@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os, base64, subprocess
 from signxml import XMLSigner, methods
@@ -7,7 +7,6 @@ from .utils import limpiar_xml
 
 app = FastAPI(title="Firmador Digital Dokploy")
 
-# Configuración de CORS para permitir conexiones externas
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,82 +23,53 @@ def home():
 
 @app.post("/cert/generar-auto")
 async def generar_auto(alias: str):
-    """Genera llave y certificado y los une en un solo archivo PEM compatible"""
+    """Genera el certificado auto-firmado directamente en el VPS"""
     key_path = os.path.join(CERT_DIR, f"{alias}.key")
-    cert_only_path = os.path.join(CERT_DIR, f"{alias}.crt")
-    final_pem_path = os.path.join(CERT_DIR, f"{alias}.pem")
+    cert_path = os.path.join(CERT_DIR, f"{alias}.crt")
+    final_pem = os.path.join(CERT_DIR, f"{alias}.pem")
 
-    # 1. Generar la llave y el certificado por separado vía OpenSSL
     cmd = (
         f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" '
-        f'-out "{cert_only_path}" -days 365 -nodes -subj "/C=PE/ST=Lima/L=Lima/O=Pruebas/CN={alias}"'
+        f'-out "{cert_path}" -days 365 -nodes -subj "/C=PE/ST=Lima/L=Lima/O=Pruebas/CN={alias}"'
     )
-    
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     
     if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"Error creando cert: {proc.stderr}")
+        raise HTTPException(status_code=500, detail=f"Error OpenSSL: {proc.stderr}")
 
-    # 2. UNIR AMBOS usando Python para asegurar compatibilidad total
-    try:
-        with open(key_path, "r") as fkey, open(cert_only_path, "r") as fcrt:
-            key_data = fkey.read()
-            cert_data = fcrt.read()
-        
-        with open(final_pem_path, "w") as ffinal:
-            ffinal.write(key_data)
-            ffinal.write("\n")
-            ffinal.write(cert_data)
+    # Unimos ambos archivos en el .pem que usará el firmador
+    with open(key_path, "r") as fkey, open(cert_path, "r") as fcrt, open(final_pem, "w") as fff:
+        fff.write(fkey.read() + "\n" + fcrt.read())
             
-        return {"status": "Certificado y Llave generados y unidos", "alias": alias}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al unir archivos: {str(e)}")
-
-@app.post("/convertir-pfx")
-async def convertir_pfx(file: UploadFile = File(...), password: str = Form(...), alias: str = Form(...)):
-    """Convierte un PFX externo a PEM en el VPS"""
-    pfx_path = os.path.join(CERT_DIR, f"{alias}.pfx")
-    pem_path = os.path.join(CERT_DIR, f"{alias}.pem")
-    
-    with open(pfx_path, "wb") as f:
-        f.write(await file.read())
-
-    cmd = f'openssl pkcs12 -in "{pfx_path}" -out "{pem_path}" -nodes -passin pass:"{password}"'
-    resultado = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-    if resultado.returncode != 0:
-        if os.path.exists(pfx_path): os.remove(pfx_path)
-        raise HTTPException(status_code=400, detail=f"Error OpenSSL: {resultado.stderr}")
-
-    return {"message": "Certificado PFX convertido a PEM", "alias": alias}
+    return {"status": "Certificado creado con éxito", "alias": alias}
 
 @app.post("/firmar-xml")
 async def firmar_xml(xml_base64: str, alias: str):
+    """Firma el XML con algoritmos específicos aceptados por SUNAT"""
     pem_path = os.path.join(CERT_DIR, f"{alias}.pem")
-    
     if not os.path.exists(pem_path):
-        raise HTTPException(status_code=404, detail="Certificado no encontrado.")
+        raise HTTPException(status_code=404, detail="No existe el certificado. Usa /generar-auto")
 
     try:
         xml_decoded = base64.b64decode(xml_base64).decode('utf-8')
         root = limpiar_xml(xml_decoded)
         
         with open(pem_path, "rb") as f:
-            cert_key_data = f.read()
+            cert_data = f.read()
 
-        # CONFIGURACIÓN ESTRICTA PARA SUNAT
+        # CONFIGURACIÓN CRÍTICA PARA EVITAR "Unknown transform algorithm"
         signer = XMLSigner(
-            method=methods.enveloped, # Esto genera http://www.w3.org/2000/09/xmldsig#enveloped-signature
+            method=methods.enveloped, # Obligatorio para SUNAT
             signature_algorithm="rsa-sha256",
             digest_algorithm="sha256"
         )
         
-        # Forzar el uso de C14N exclusivo (Transformación estándar)
+        # Firmamos de la forma más simple posible (solo X509Data)
         signed_root = signer.sign(
             root, 
-            key=cert_key_data, 
-            cert=cert_key_data,
-            always_add_key_value=False # SUNAT prefiere solo X509Data
+            key=cert_data, 
+            cert=cert_data,
+            always_add_key_value=False # SUNAT prefiere NO tener KeyValue
         )
         
         xml_firmado = etree.tostring(signed_root, xml_declaration=True, encoding="UTF-8")
@@ -110,4 +80,3 @@ async def firmar_xml(xml_base64: str, alias: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en firma: {str(e)}")
-
