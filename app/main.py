@@ -7,6 +7,7 @@ from .utils import limpiar_xml
 
 app = FastAPI(title="Firmador Digital Dokploy")
 
+# Configuración de CORS para permitir conexiones externas
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -95,7 +96,7 @@ async def firmar_xml(xml_base64: str, alias: str):
             digest_algorithm="sha256"
         )
         
-        # Firmar (El archivo PEM ahora contiene Private Key + Certificate)
+        # Firmar
         signed_root = signer.sign(root, key=cert_key_data, cert=cert_key_data)
         xml_firmado = etree.tostring(signed_root, xml_declaration=True, encoding="UTF-8")
         
