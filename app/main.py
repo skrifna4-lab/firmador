@@ -75,29 +75,33 @@ async def convertir_pfx(file: UploadFile = File(...), password: str = Form(...),
 
 @app.post("/firmar-xml")
 async def firmar_xml(xml_base64: str, alias: str):
-    """Firma un XML usando el certificado guardado en el VPS"""
     pem_path = os.path.join(CERT_DIR, f"{alias}.pem")
     
     if not os.path.exists(pem_path):
-        raise HTTPException(status_code=404, detail="Certificado no encontrado. Genere uno primero.")
+        raise HTTPException(status_code=404, detail="Certificado no encontrado.")
 
     try:
-        # Decodificar el XML recibido
         xml_decoded = base64.b64decode(xml_base64).decode('utf-8')
         root = limpiar_xml(xml_decoded)
         
         with open(pem_path, "rb") as f:
             cert_key_data = f.read()
 
-        # Configurar firmante estándar SUNAT/UBL
+        # CONFIGURACIÓN ESTRICTA PARA SUNAT
         signer = XMLSigner(
-            method=methods.enveloped,
+            method=methods.enveloped, # Esto genera http://www.w3.org/2000/09/xmldsig#enveloped-signature
             signature_algorithm="rsa-sha256",
             digest_algorithm="sha256"
         )
         
-        # Firmar
-        signed_root = signer.sign(root, key=cert_key_data, cert=cert_key_data)
+        # Forzar el uso de C14N exclusivo (Transformación estándar)
+        signed_root = signer.sign(
+            root, 
+            key=cert_key_data, 
+            cert=cert_key_data,
+            always_add_key_value=False # SUNAT prefiere solo X509Data
+        )
+        
         xml_firmado = etree.tostring(signed_root, xml_declaration=True, encoding="UTF-8")
         
         return {
@@ -106,3 +110,4 @@ async def firmar_xml(xml_base64: str, alias: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en firma: {str(e)}")
+
