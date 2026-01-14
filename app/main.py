@@ -1,46 +1,69 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 import os, subprocess
 
-app = FastAPI()
+app = FastAPI(title="Generador de Certificados SUNAT - Hasbun")
+
 CERT_DIR = "/app/certs"
 os.makedirs(CERT_DIR, exist_ok=True)
 
 @app.post("/cert/generar-auto")
-async def generar_auto(alias: str):
+async def generar_auto(
+    alias: str = Query(..., description="Nombre del archivo (ej: certificadov1)"),
+    ruc: str = Query(..., description="RUC de la empresa"),
+    razon_social: str = Query(..., description="Nombre o Razón Social de la empresa")
+):
+    """
+    Genera los 3 archivos (.key, .crt, .cer) con los permisos de 
+    FIRMA DIGITAL que SUNAT exige.
+    """
     key_path = os.path.join(CERT_DIR, f"{alias}.key")
-    cert_path = os.path.join(CERT_DIR, f"{alias}.crt")
+    crt_path = os.path.join(CERT_DIR, f"{alias}.crt")
     cer_path = os.path.join(CERT_DIR, f"{alias}.cer")
     
-    # 1. Comando OpenSSL con extensiones para SUNAT (Digital Signature y Non Repudiation)
-    # Agregamos -addext para que el certificado sea legalmente de "Firma"
+    # El campo CN suele llevar el RUC para mayor compatibilidad con SUNAT
+    # El campo O lleva la Razón Social
+    subject = f"/C=PE/L=Lima/O={razon_social}/CN={ruc}"
+    
+    # COMANDO MAESTRO: Genera certificado con uso de firma digital y no repudio
     cmd = (
-        f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" -out "{cert_path}" '
-        f'-days 365 -nodes -subj "/C=PE/L=Lima/O=INVERSIONES HASBUN/CN={alias}" '
+        f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" -out "{crt_path}" '
+        f'-days 365 -nodes -subj "{subject}" '
         f'-addext "keyUsage = critical, digitalSignature, nonRepudiation"'
     )
     
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     
     if result.returncode != 0:
-        return {"error": "Fallo al generar", "detalle": result.stderr}
+        raise HTTPException(status_code=500, detail=f"Error OpenSSL: {result.stderr}")
 
-    # 2. Creamos el .cer (es una copia en formato DER que SUNAT prefiere)
-    # Convertimos el CRT (PEM) a CER (DER) para asegurar compatibilidad total
-    cmd_convert = f'openssl x509 -in "{cert_path}" -outform DER -out "{cer_path}"'
+    # Convertir a formato .CER (DER binario) que es el que SUNAT acepta sin errores
+    cmd_convert = f'openssl x509 -in "{crt_path}" -outform DER -out "{cer_path}"'
     subprocess.run(cmd_convert, shell=True)
 
     return {
-        "message": "Generados correctamente",
-        "archivos": [f"{alias}.key", f"{alias}.crt", f"{alias}.cer"],
-        "instruccion": "Sube el .cer al portal SOL de SUNAT"
+        "status": "success",
+        "empresa": razon_social,
+        "ruc": ruc,
+        "archivos_generados": [f"{alias}.key", f"{alias}.crt", f"{alias}.cer"],
+        "download_urls": {
+            "key": f"/cert/descargar/{alias}/key",
+            "crt": f"/cert/descargar/{alias}/crt",
+            "cer": f"/cert/descargar/{alias}/cer"
+        }
     }
 
 @app.get("/cert/descargar/{alias}/{ext}")
 async def descargar(alias: str, ext: str):
-    # Soporta ext: key, crt, cer
+    # Validamos extensiones permitidas
+    if ext not in ["key", "crt", "cer"]:
+        raise HTTPException(status_code=400, detail="Extensión no permitida")
+        
     file_path = os.path.join(CERT_DIR, f"{alias}.{ext}")
     if os.path.exists(file_path):
-        # Forzamos la descarga del archivo
-        return FileResponse(file_path, filename=f"{alias}.{ext}")
-    raise HTTPException(status_code=404, detail="Archivo no encontrado")
+        return FileResponse(
+            path=file_path, 
+            filename=f"{alias}.{ext}",
+            media_type='application/octet-stream'
+        )
+    raise HTTPException(status_code=404, detail="El archivo solicitado no existe")
