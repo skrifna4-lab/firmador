@@ -23,7 +23,7 @@ def home():
 
 @app.post("/cert/generar-auto")
 async def generar_auto(alias: str):
-    """Genera el certificado auto-firmado directamente en el VPS"""
+    """Genera llave y certificado auto-firmado en el VPS"""
     key_path = os.path.join(CERT_DIR, f"{alias}.key")
     cert_path = os.path.join(CERT_DIR, f"{alias}.crt")
     final_pem = os.path.join(CERT_DIR, f"{alias}.pem")
@@ -37,18 +37,17 @@ async def generar_auto(alias: str):
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=f"Error OpenSSL: {proc.stderr}")
 
-    # Unimos ambos archivos en el .pem que usará el firmador
-    with open(key_path, "r") as fkey, open(cert_path, "r") as fcrt, open(final_pem, "w") as fff:
-        fff.write(fkey.read() + "\n" + fcrt.read())
+    with open(key_path, "r") as fk, open(cert_path, "r") as fc, open(final_pem, "w") as ff:
+        ff.write(fk.read() + "\n" + fc.read())
             
-    return {"status": "Certificado creado con éxito", "alias": alias}
+    return {"status": "Certificado creado", "alias": alias}
 
 @app.post("/firmar-xml")
 async def firmar_xml(xml_base64: str, alias: str):
-    """Firma el XML con algoritmos específicos aceptados por SUNAT"""
+    """Firma el XML con el estándar estricto de SUNAT"""
     pem_path = os.path.join(CERT_DIR, f"{alias}.pem")
     if not os.path.exists(pem_path):
-        raise HTTPException(status_code=404, detail="No existe el certificado. Usa /generar-auto")
+        raise HTTPException(status_code=404, detail="No existe el certificado.")
 
     try:
         xml_decoded = base64.b64decode(xml_base64).decode('utf-8')
@@ -57,19 +56,19 @@ async def firmar_xml(xml_base64: str, alias: str):
         with open(pem_path, "rb") as f:
             cert_data = f.read()
 
-        # CONFIGURACIÓN CRÍTICA PARA EVITAR "Unknown transform algorithm"
+        # CONFIGURACIÓN PARA EVITAR 'Unknown transform algorithm'
         signer = XMLSigner(
-            method=methods.enveloped, # Obligatorio para SUNAT
+            method=methods.enveloped,
             signature_algorithm="rsa-sha256",
             digest_algorithm="sha256"
         )
         
-        # Firmamos de la forma más simple posible (solo X509Data)
+        # Firmamos SIN KeyValue (solo X509Data) para máxima compatibilidad
         signed_root = signer.sign(
             root, 
             key=cert_data, 
             cert=cert_data,
-            always_add_key_value=False # SUNAT prefiere NO tener KeyValue
+            always_add_key_value=False 
         )
         
         xml_firmado = etree.tostring(signed_root, xml_declaration=True, encoding="UTF-8")
