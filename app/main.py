@@ -10,15 +10,37 @@ os.makedirs(CERT_DIR, exist_ok=True)
 async def generar_auto(alias: str):
     key_path = os.path.join(CERT_DIR, f"{alias}.key")
     cert_path = os.path.join(CERT_DIR, f"{alias}.crt")
-    # Genera certificado y llave
-    cmd = f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" -out "{cert_path}" -days 365 -nodes -subj "/C=PE/L=Lima/O=Pruebas/CN={alias}"'
-    subprocess.run(cmd, shell=True, capture_output=True)
-    return {"message": "Generado. Ahora puedes descargarlos."}
+    cer_path = os.path.join(CERT_DIR, f"{alias}.cer")
+    
+    # 1. Comando OpenSSL con extensiones para SUNAT (Digital Signature y Non Repudiation)
+    # Agregamos -addext para que el certificado sea legalmente de "Firma"
+    cmd = (
+        f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" -out "{cert_path}" '
+        f'-days 365 -nodes -subj "/C=PE/L=Lima/O=INVERSIONES HASBUN/CN={alias}" '
+        f'-addext "keyUsage = critical, digitalSignature, nonRepudiation"'
+    )
+    
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        return {"error": "Fallo al generar", "detalle": result.stderr}
+
+    # 2. Creamos el .cer (es una copia en formato DER que SUNAT prefiere)
+    # Convertimos el CRT (PEM) a CER (DER) para asegurar compatibilidad total
+    cmd_convert = f'openssl x509 -in "{cert_path}" -outform DER -out "{cer_path}"'
+    subprocess.run(cmd_convert, shell=True)
+
+    return {
+        "message": "Generados correctamente",
+        "archivos": [f"{alias}.key", f"{alias}.crt", f"{alias}.cer"],
+        "instruccion": "Sube el .cer al portal SOL de SUNAT"
+    }
 
 @app.get("/cert/descargar/{alias}/{ext}")
 async def descargar(alias: str, ext: str):
-    # ext puede ser 'key' o 'crt'
+    # Soporta ext: key, crt, cer
     file_path = os.path.join(CERT_DIR, f"{alias}.{ext}")
     if os.path.exists(file_path):
-        return FileResponse(file_path)
+        # Forzamos la descarga del archivo
+        return FileResponse(file_path, filename=f"{alias}.{ext}")
     raise HTTPException(status_code=404, detail="Archivo no encontrado")
